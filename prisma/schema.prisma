@@ -1,0 +1,194 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// 사용자
+// ============================================
+
+enum Plan {
+  FREE
+  PREMIUM
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  password      String?
+  plan          Plan      @default(FREE)
+  stripeCustomerId   String?   @unique
+  stripeSubscriptionId String?
+  stripePriceId      String?
+  stripeCurrentPeriodEnd DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts         Account[]
+  portfolios       Portfolio[]
+  analysisReports  AnalysisReport[]
+  savedAnalyses    SavedAnalysis[]
+  newsSubscriptions NewsSubscription[]
+  dailyUsage       DailyUsage[]
+
+  @@index([email])
+  @@index([stripeCustomerId])
+}
+
+model DailyUsage {
+  id     String   @id @default(cuid())
+  userId String
+  date   String   // YYYY-MM-DD 형식
+  count  Int      @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+// ============================================
+// 포트폴리오
+// ============================================
+
+model Portfolio {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items PortfolioItem[]
+
+  @@index([userId])
+}
+
+enum Market {
+  KR
+  US
+}
+
+model PortfolioItem {
+  id          String   @id @default(cuid())
+  portfolioId String
+  stockSymbol String
+  stockName   String
+  market      Market
+  weight      Float
+  avgPrice    Float?
+  createdAt   DateTime @default(now())
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+  @@index([stockSymbol])
+}
+
+// ============================================
+// 뉴스 기사
+// ============================================
+
+model NewsArticle {
+  id          String    @id @default(cuid())
+  title       String
+  url         String    @unique
+  source      String?
+  content     String?   @db.Text
+  summary     String?   @db.Text
+  category    String?
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  isAnalyzed  Boolean   @default(false)
+
+  analysisReports AnalysisReport[]
+
+  @@index([publishedAt])
+  @@index([category])
+  @@index([isAnalyzed])
+}
+
+// ============================================
+// AI 분석 리포트
+// ============================================
+
+model AnalysisReport {
+  id                      String   @id @default(cuid())
+  newsArticleId           String
+  userId                  String?
+  hiddenIntent            String   @db.Text
+  impact                  String   @db.Text
+  affectedStocks          Json
+  portfolioRecommendation Json?
+  confidence              Int
+  createdAt               DateTime @default(now())
+
+  newsArticle    NewsArticle     @relation(fields: [newsArticleId], references: [id], onDelete: Cascade)
+  user           User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  savedAnalyses  SavedAnalysis[]
+
+  @@index([newsArticleId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ============================================
+// 저장된 분석
+// ============================================
+
+model SavedAnalysis {
+  id               String   @id @default(cuid())
+  userId           String
+  analysisReportId String
+  createdAt        DateTime @default(now())
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analysisReport AnalysisReport @relation(fields: [analysisReportId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, analysisReportId])
+  @@index([userId])
+}
+
+// ============================================
+// 뉴스 구독 설정
+// ============================================
+
+model NewsSubscription {
+  id       String  @id @default(cuid())
+  userId   String
+  keywords Json
+  markets  Json
+  isActive Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive])
+}
