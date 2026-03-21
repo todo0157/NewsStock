@@ -1,30 +1,39 @@
 @AGENTS.md
 
 # currentDate
-Today's date is 2026-03-20.
+Today's date is 2026-03-22.
 
 # Project: NewsStock AI
 뉴스와 정책을 AI로 분석하여 수혜/손해 종목을 도출하는 서비스
 
 ## Tech Stack
-- **Frontend**: React 19, Tailwind CSS 4, shadcn/ui, Lucide, Recharts, Framer Motion, React Query, react-hook-form
-- **Backend**: Next.js 16 (App Router), NextAuth.js, Anthropic SDK (Claude), Stripe, RSS Parser, 한국투자증권 API, Finnhub API, Zod, bcryptjs
-- **Database**: PostgreSQL + Prisma ORM (Supabase 호스팅)
+- **Frontend**: React 19, Tailwind CSS 4, shadcn/ui, Framer Motion, Noto Sans KR
+- **Backend**: Next.js 16 (App Router), Anthropic SDK (Claude), Supabase JS Client
+- **Database**: PostgreSQL (Supabase 호스팅, anon key 연동)
+- **Auth**: 이메일/비밀번호 인증 (쿠키 기반 세션), 관리자 계정 하드코딩 ("0" 입력 즉시 로그인)
+- **향후 추가 예정**: 소셜 로그인(Google/Kakao), Stripe 결제, RSS Parser, 한국투자증권 API
 
 ## Project Structure
-- `src/app/` - 페이지 및 API 라우트
-- `src/app/(auth)/` - 로그인, 회원가입 페이지
-- `src/app/(dashboard)/` - 대시보드 (피드, 분석, 포트폴리오, 리포트, 요금제, 설정)
-- `src/app/api/` - 백엔드 API 엔드포인트
-- `src/lib/` - 핵심 로직 (AI, 뉴스, 주식, 인증, 결제)
-- `src/components/` - UI 컴포넌트
-- `src/types/` - TypeScript 타입 정의
-- `prisma/` - DB 스키마
+- `src/app/page.tsx` - 랜딩 페이지 (스플래시 → 이메일 로그인/회원가입 + 소셜 로그인 UI)
+- `src/app/(dashboard)/` - 대시보드 (피드, AI분석, 포트폴리오, 리포트, 설정)
+- `src/app/api/auth/email/` - 이메일 인증 API (Supabase users 테이블 연동)
+- `src/app/api/stocks/screenshot/` - 스크린샷 AI 분석 API (포트폴리오 종목 추출)
+- `src/app/api/stocks/kis/` - 한국투자증권 API 연동 (보유종목 조회)
+- `src/lib/supabase.ts` - Supabase 클라이언트
+- `prisma/` - DB 스키마 (참고용, 실제 DB는 Supabase 직접 관리)
 - `reports/` - 작업 리포트
 
-## Notes
-- 랜딩 페이지(src/app/page.tsx)는 아직 Next.js 기본 템플릿 상태
-- package.json에 일부 의존성 누락 (next-auth, prisma, @anthropic-ai/sdk, stripe 등)
-- Supabase 무료 플랜 만료 → 로컬 PostgreSQL 또는 Neon 전환 고려 중
+## Current State (2026-03-22)
+- 랜딩 페이지: 스플래시(1.2초) → 이메일 로그인/회원가입 + Google/Kakao 소셜 로그인 UI
+- 다크/라이트 모드: 시스템 설정 자동 감지
+- 색상 테마: 흰색+진한 초록(라이트) / 검정+진한 초록(다크)
+- 인증: Supabase users 테이블 연동, 관리자 "0" 즉시 로그인
+- 대시보드 5개 탭: 뉴스피드, AI분석, 포트폴리오, 리포트, 설정 (목 데이터)
+- 포트폴리오: 스크린샷 AI 분석 + 직접 입력
+- AI 분석: URL 입력 → 4단계 분석 애니메이션 → 목 결과 표시
 
-      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+## Notes
+- Claude API 실제 연동은 미완 (목 데이터 사용 중)
+- 소셜 로그인(Google/Kakao)은 UI만 있음, 실제 연동 필요
+- 뉴스 피드는 나중에 포트폴리오 종목 관련 뉴스 자동 필터링 구현 예정
+- next-auth, prisma, stripe 등 미설치 → providers.tsx, middleware.ts 임시 비활성화

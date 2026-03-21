@@ -1,344 +1,250 @@
 'use client';
 
-import { Suspense, useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { useMutation } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Loader2, TrendingUp, TrendingDown, Shield, Zap, Target } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import type { AnalysisResult } from '@/types/analysis';
-import { mockAnalysis } from '@/lib/mock-data';
+import { useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
-const STEPS = ['기사 파싱 중...', 'AI 분석 중...', '종목 매칭 중...', '리포트 생성 중...'];
-
-function SeverityBadge({ severity }: { severity: string }) {
-  const colors = {
-    HIGH: 'bg-red-500/10 text-red-400',
-    MEDIUM: 'bg-yellow-500/10 text-yellow-400',
-    LOW: 'bg-green-500/10 text-green-400',
-  };
-  return <Badge className={colors[severity as keyof typeof colors] || ''}>{severity}</Badge>;
+interface StockResult {
+  name: string;
+  symbol: string;
+  market: string;
+  impact: 'positive' | 'negative';
+  probability: number;
+  reason: string;
+  action: string;
+  timing: string;
 }
 
-function ProbabilityBar({ value }: { value: number }) {
-  const color = value >= 70 ? 'bg-red-500' : value >= 40 ? 'bg-yellow-500' : 'bg-blue-500';
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-2 flex-1 rounded-full bg-neutral-800">
-        <motion.div
-          className={`h-full rounded-full ${color}`}
-          initial={{ width: 0 }}
-          animate={{ width: `${value}%` }}
-          transition={{ duration: 0.8, ease: 'easeOut' }}
-        />
-      </div>
-      <span className="w-10 text-right text-sm font-medium">{value}%</span>
-    </div>
-  );
+interface AnalysisResult {
+  keyInsight: string;
+  sentiment: string;
+  hiddenIntent: string;
+  hiddenIntentDetail: string;
+  impact: { label: string; severity: string; description: string }[];
+  benefitStocks: StockResult[];
+  harmStocks: StockResult[];
+  confidence: number;
 }
+
+// 목 분석 결과
+const mockResult: AnalysisResult = {
+  keyInsight: '정부의 반도체 산업 지원 정책 강화로 국내 반도체 기업들의 수혜가 예상되며, 특히 메모리 반도체 업체들의 실적 개선이 기대됩니다.',
+  sentiment: '상승',
+  hiddenIntent: '반도체 산업 국가 전략화',
+  hiddenIntentDetail: '미중 기술패권 경쟁 속에서 한국 반도체 산업의 글로벌 경쟁력을 강화하기 위한 정부 차원의 전략적 지원. 세제 혜택과 R&D 투자 확대를 통해 삼성전자·SK하이닉스의 차세대 반도체 개발을 가속화하려는 의도.',
+  impact: [
+    { label: '단기 (1~2주)', severity: '높음', description: '반도체 관련주 매수세 유입 예상' },
+    { label: '중기 (1~3개월)', severity: '중간', description: 'R&D 투자 확대에 따른 실적 기대감' },
+    { label: '장기 (6개월+)', severity: '높음', description: '글로벌 반도체 공급망 재편 수혜' },
+  ],
+  benefitStocks: [
+    { name: '삼성전자', symbol: '005930', market: 'KR', impact: 'positive', probability: 85, reason: '정부 세제 혜택 직접 수혜, HBM 투자 확대', action: '매수', timing: '단기' },
+    { name: 'SK하이닉스', symbol: '000660', market: 'KR', impact: 'positive', probability: 82, reason: 'AI 메모리 수요 증가 + 정책 지원 수혜', action: '매수', timing: '단기' },
+    { name: 'NVIDIA', symbol: 'NVDA', market: 'US', impact: 'positive', probability: 68, reason: '한국 반도체 공급 안정화 → GPU 생산 확대', action: '관망', timing: '중기' },
+  ],
+  harmStocks: [
+    { name: '중국 반도체 ETF', symbol: 'SOXC', market: 'US', impact: 'negative', probability: 60, reason: '한국 반도체 경쟁력 강화 → 중국 업체 점유율 하락', action: '매도', timing: '중기' },
+  ],
+  confidence: 78,
+};
 
 export default function AnalyzePage() {
-  return (
-    <Suspense fallback={<div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-blue-500" /></div>}>
-      <AnalyzeContent />
-    </Suspense>
-  );
-}
-
-function AnalyzeContent() {
-  const searchParams = useSearchParams();
-  const [url, setUrl] = useState(searchParams.get('url') || '');
+  const [url, setUrl] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
   const [step, setStep] = useState(0);
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
 
-  const parseMutation = useMutation({
-    mutationFn: async (targetUrl: string) => {
-      // 파싱 단계
-      setStep(0);
-      let article;
-      try {
-        const res = await fetch('/api/news/parse-url', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: targetUrl }),
-        });
-        if (!res.ok) throw new Error('파싱 실패');
-        const data = await res.json();
-        article = data.article;
-      } catch {
-        article = { title: '테스트 기사', content: '목 데이터로 분석합니다.', source: 'test' };
-      }
+  const steps = ['기사 파싱 중...', 'AI 분석 중...', '종목 매칭 중...', '리포트 생성 중...'];
 
-      // AI 분석 단계
-      setStep(1);
-      try {
-        const res = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: article.title,
-            content: article.content,
-            source: article.source,
-            publishedAt: article.publishedAt,
-          }),
-        });
-        if (!res.ok) throw new Error('분석 실패');
-        const data = await res.json();
-        setStep(2);
-        await new Promise((r) => setTimeout(r, 500));
-        setStep(3);
-        await new Promise((r) => setTimeout(r, 500));
-        return data.analysis as AnalysisResult;
-      } catch {
-        // API 키 없을 때 목 데이터 사용
-        setStep(2);
-        await new Promise((r) => setTimeout(r, 800));
-        setStep(3);
-        await new Promise((r) => setTimeout(r, 800));
-        return mockAnalysis;
-      }
-    },
-    onSuccess: (data) => setAnalysis(data),
-  });
-
-  useEffect(() => {
-    const paramUrl = searchParams.get('url');
-    if (paramUrl && paramUrl !== url) {
-      setUrl(paramUrl);
-    }
-  }, [searchParams]);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  const handleAnalyze = async () => {
     if (!url.trim()) return;
-    setAnalysis(null);
-    parseMutation.mutate(url.trim());
-  }
+    setResult(null);
+    setAnalyzing(true);
+
+    for (let i = 0; i < steps.length; i++) {
+      setStep(i);
+      await new Promise((r) => setTimeout(r, 800));
+    }
+
+    setAnalyzing(false);
+    setResult(mockResult);
+  };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8">
-      {/* URL 입력 */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="space-y-2 text-center"
-      >
-        <h1 className="text-2xl font-bold">뉴스 AI 분석</h1>
-        <p className="text-neutral-400">뉴스 URL을 입력하면 AI가 숨겨진 의도와 수혜/손해 종목을 분석합니다</p>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">AI 분석</h1>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          뉴스 URL을 입력하면 AI가 수혜/손해 종목을 분석합니다.
+        </p>
       </motion.div>
 
-      <form onSubmit={handleSubmit} className="flex gap-2">
-        <Input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="뉴스 기사 URL을 붙여넣으세요..."
-          className="h-12 border-neutral-700 bg-neutral-900 text-base"
-        />
-        <Button type="submit" className="h-12 px-6" disabled={parseMutation.isPending}>
-          {parseMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Search className="h-4 w-4" />
-          )}
-        </Button>
-      </form>
+      {/* URL 입력 */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1, duration: 0.4 }}
+        className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+      >
+        <div className="flex gap-3">
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="뉴스 URL을 붙여넣으세요"
+            className="flex-1 rounded-lg border border-border bg-white px-4 py-3 text-gray-900 placeholder:text-gray-400 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 dark:bg-black dark:text-white dark:placeholder:text-gray-500"
+          />
+          <button
+            onClick={handleAnalyze}
+            disabled={analyzing || !url.trim()}
+            className="shrink-0 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {analyzing ? '분석 중...' : '분석하기'}
+          </button>
+        </div>
+      </motion.div>
 
-      {/* 로딩 */}
-      {parseMutation.isPending && (
-        <Card className="border-neutral-800 bg-neutral-900/50">
-          <CardContent className="py-8">
-            <div className="space-y-4">
-              {STEPS.map((label, i) => (
-                <motion.div
-                  key={label}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: step >= i ? 1 : 0.3 }}
-                  className="flex items-center gap-3"
-                >
-                  {step > i ? (
-                    <div className="h-6 w-6 rounded-full bg-green-500/20 p-1 text-green-400">✓</div>
-                  ) : step === i ? (
-                    <Loader2 className="h-6 w-6 animate-spin text-blue-400" />
-                  ) : (
-                    <div className="h-6 w-6 rounded-full bg-neutral-800" />
-                  )}
-                  <span className={step >= i ? 'text-white' : 'text-neutral-600'}>{label}</span>
-                </motion.div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {/* 분석 진행 */}
+      {analyzing && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+        >
+          <div className="space-y-4">
+            {steps.map((label, i) => (
+              <div key={label} className={`flex items-center gap-3 transition-opacity ${step >= i ? 'opacity-100' : 'opacity-30'}`}>
+                {step > i ? (
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-green-100 text-sm text-green-600 dark:bg-green-950 dark:text-green-400">✓</span>
+                ) : step === i ? (
+                  <span className="flex h-6 w-6 items-center justify-center">
+                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  </span>
+                ) : (
+                  <span className="h-6 w-6 rounded-full bg-gray-200 dark:bg-gray-800" />
+                )}
+                <span className={`text-sm ${step >= i ? 'text-gray-900 dark:text-white' : 'text-gray-400'}`}>{label}</span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
       )}
 
       {/* 분석 결과 */}
       <AnimatePresence>
-        {analysis && (
+        {result && (
           <motion.div
-            initial={{ opacity: 0, y: 40 }}
+            initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="space-y-6"
+            className="space-y-4"
           >
             {/* 핵심 인사이트 */}
-            <Card className="border-blue-500/30 bg-blue-500/5">
-              <CardContent className="flex items-start gap-3 py-4">
-                <Zap className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-5">
+              <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-semibold text-blue-300">핵심 인사이트</p>
-                  <p className="mt-1 text-sm text-neutral-300">{analysis.keyInsight}</p>
+                  <p className="text-sm font-semibold text-primary">핵심 인사이트</p>
+                  <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{result.keyInsight}</p>
                 </div>
-                <Badge
-                  className={
-                    analysis.overallSentiment === 'BULLISH'
-                      ? 'bg-green-500/10 text-green-400'
-                      : analysis.overallSentiment === 'BEARISH'
-                        ? 'bg-red-500/10 text-red-400'
-                        : 'bg-neutral-500/10 text-neutral-400'
-                  }
-                >
-                  {analysis.overallSentiment}
-                </Badge>
-              </CardContent>
-            </Card>
+                <span className="shrink-0 rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950 dark:text-green-300">
+                  {result.sentiment}
+                </span>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <span className="text-xs text-gray-500">신뢰도</span>
+                <div className="h-2 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${result.confidence}%` }} />
+                </div>
+                <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{result.confidence}%</span>
+              </div>
+            </div>
 
             {/* 숨겨진 의도 */}
-            <Card className="border-neutral-800 bg-neutral-900/50">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <Shield className="h-5 w-5 text-purple-400" />
-                  숨겨진 의도
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <p className="font-medium text-purple-300">{analysis.hiddenIntent.summary}</p>
-                <p className="text-sm leading-relaxed text-neutral-400">{analysis.hiddenIntent.details}</p>
-              </CardContent>
-            </Card>
+            <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
+              <p className="text-sm font-semibold text-purple-600 dark:text-purple-400">🔮 숨겨진 의도</p>
+              <p className="mt-1 font-medium text-gray-900 dark:text-white">{result.hiddenIntent}</p>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{result.hiddenIntentDetail}</p>
+            </div>
 
             {/* 파장 분석 */}
-            <Card className="border-neutral-800 bg-neutral-900/50">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <Target className="h-5 w-5 text-orange-400" />
-                  파장 분석
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-4 md:grid-cols-3">
-                  {[
-                    { label: '단기 (1-2주)', data: analysis.impact.shortTerm },
-                    { label: '중기 (1-3개월)', data: analysis.impact.midTerm },
-                    { label: '장기 (6개월+)', data: analysis.impact.longTerm },
-                  ].map((period) => (
-                    <div key={period.label} className="rounded-lg bg-neutral-800/50 p-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-neutral-300">{period.label}</span>
-                        <SeverityBadge severity={period.data.severity} />
-                      </div>
-                      <p className="mt-2 text-sm text-neutral-400">{period.data.description}</p>
+            <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
+              <p className="mb-3 text-sm font-semibold text-orange-600 dark:text-orange-400">🎯 파장 분석</p>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {result.impact.map((item) => (
+                  <div key={item.label} className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{item.label}</span>
+                      <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                        item.severity === '높음' ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                          : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300'
+                      }`}>{item.severity}</span>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
 
             {/* 수혜 종목 */}
-            <Card className="border-neutral-800 bg-neutral-900/50">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <TrendingUp className="h-5 w-5 text-green-400" />
-                  수혜 종목
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {analysis.benefitStocks.map((stock) => (
-                    <div key={stock.symbol} className="rounded-lg bg-neutral-800/50 p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-green-300">{stock.name}</span>
-                          <Badge variant="outline" className="border-neutral-600 text-neutral-400 text-[10px]">
-                            {stock.symbol}
-                          </Badge>
-                          <Badge variant="outline" className="border-neutral-600 text-neutral-400 text-[10px]">
-                            {stock.market}
-                          </Badge>
-                        </div>
-                        <Badge
-                          className={
-                            stock.recommendation.action === 'BUY'
-                              ? 'bg-green-500/10 text-green-400'
-                              : 'bg-blue-500/10 text-blue-400'
-                          }
-                        >
-                          {stock.recommendation.action}
-                        </Badge>
+            <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
+              <p className="mb-3 text-sm font-semibold text-green-600 dark:text-green-400">📈 수혜 종목</p>
+              <div className="space-y-3">
+                {result.benefitStocks.map((stock) => (
+                  <div key={stock.symbol} className="rounded-lg bg-gray-50 p-4 dark:bg-gray-900">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                        <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
                       </div>
-                      <p className="mt-2 text-sm text-neutral-400">{stock.reason}</p>
-                      <div className="mt-3">
-                        <ProbabilityBar value={stock.probability} />
-                      </div>
-                      <p className="mt-2 text-xs text-neutral-500">
-                        타이밍: {stock.recommendation.timing}
-                        {stock.recommendation.targetPrice && ` | 목표가: ${stock.recommendation.targetPrice}`}
-                      </p>
+                      <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-700 dark:bg-green-950 dark:text-green-300">{stock.action}</span>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
+                        <div className="h-full rounded-full bg-green-500" style={{ width: `${stock.probability}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-500">{stock.probability}%</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
 
             {/* 손해 종목 */}
-            <Card className="border-neutral-800 bg-neutral-900/50">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <TrendingDown className="h-5 w-5 text-red-400" />
-                  손해 종목
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {analysis.harmStocks.map((stock) => (
-                    <div key={stock.symbol} className="rounded-lg bg-neutral-800/50 p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-red-300">{stock.name}</span>
-                          <Badge variant="outline" className="border-neutral-600 text-neutral-400 text-[10px]">
-                            {stock.symbol}
-                          </Badge>
-                          <Badge variant="outline" className="border-neutral-600 text-neutral-400 text-[10px]">
-                            {stock.market}
-                          </Badge>
-                        </div>
-                        <Badge
-                          className={
-                            stock.recommendation.action === 'SELL'
-                              ? 'bg-red-500/10 text-red-400'
-                              : 'bg-yellow-500/10 text-yellow-400'
-                          }
-                        >
-                          {stock.recommendation.action}
-                        </Badge>
+            <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
+              <p className="mb-3 text-sm font-semibold text-red-600 dark:text-red-400">📉 손해 종목</p>
+              <div className="space-y-3">
+                {result.harmStocks.map((stock) => (
+                  <div key={stock.symbol} className="rounded-lg bg-gray-50 p-4 dark:bg-gray-900">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                        <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
                       </div>
-                      <p className="mt-2 text-sm text-neutral-400">{stock.reason}</p>
-                      <div className="mt-3">
-                        <ProbabilityBar value={stock.probability} />
-                      </div>
-                      <p className="mt-2 text-xs text-neutral-500">타이밍: {stock.recommendation.timing}</p>
+                      <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">{stock.action}</span>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
+                        <div className="h-full rounded-full bg-red-500" style={{ width: `${stock.probability}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-500">{stock.probability}%</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
 
-            <Separator className="bg-neutral-800" />
-            <p className="text-center text-xs text-neutral-600">
-              본 분석은 AI 기반 참고 자료이며, 투자 결정의 최종 책임은 본인에게 있습니다.
-            </p>
+            {/* PDF 내보내기 + 면책 */}
+            <div className="flex items-center justify-between rounded-xl border border-border bg-white px-5 py-4 dark:bg-gray-950">
+              <p className="text-xs text-gray-400">본 분석은 AI 기반 참고 자료이며, 투자 결정의 최종 책임은 본인에게 있습니다.</p>
+              <button className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-900">
+                PDF 내보내기
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

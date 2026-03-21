@@ -1,284 +1,267 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-import { Plus, Trash2, Pencil, Search, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { mockPortfolio } from '@/lib/mock-data';
+import { AnimatePresence, motion } from 'framer-motion';
 
-const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
-
-interface PortfolioItem {
-  id: string;
-  stockSymbol: string;
-  stockName: string;
-  market: 'KR' | 'US';
-  weight: number;
-  avgPrice: number | null;
-}
-
-interface Portfolio {
-  id: string;
+interface Stock {
   name: string;
-  items: PortfolioItem[];
+  symbol: string;
+  quantity: number;
+  avgPrice: number;
+  market: string;
 }
 
 export default function PortfolioPage() {
-  const queryClient = useQueryClient();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [newStock, setNewStock] = useState<{ symbol: string; name: string; market: 'KR' | 'US'; weight: number }>({
-    symbol: '', name: '', market: 'KR', weight: 10,
-  });
+  const [stocks, setStocks] = useState<Stock[]>([]);
+  const [error, setError] = useState('');
 
-  // 포트폴리오 조회 (DB 없을 때 목 데이터 폴백)
-  const { data: portfolioData } = useQuery<{ portfolios: Portfolio[] }>({
-    queryKey: ['portfolio'],
-    queryFn: async () => {
-      try {
-        const res = await fetch('/api/portfolio');
-        if (!res.ok) throw new Error();
-        const data = await res.json();
-        if (data.portfolios?.length > 0) return data;
-        throw new Error('empty');
-      } catch {
-        return { portfolios: [mockPortfolio as Portfolio] };
-      }
-    },
-  });
+  // 스크린샷 상태
+  const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
+  const [screenshotPreview, setScreenshotPreview] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
 
-  const portfolio = portfolioData?.portfolios?.[0];
-  const items = portfolio?.items ?? [];
+  // 직접 입력 상태
+  const [manualName, setManualName] = useState('');
+  const [manualSymbol, setManualSymbol] = useState('');
+  const [manualQuantity, setManualQuantity] = useState('');
+  const [manualPrice, setManualPrice] = useState('');
+  const [manualMarket, setManualMarket] = useState('KR');
 
-  // 종목 추가
-  const addMutation = useMutation({
-    mutationFn: async (stock: typeof newStock) => {
-      if (!portfolio?.id) return;
-      const res = await fetch(`/api/portfolio/${portfolio.id}/items`, {
+  // 스크린샷 선택
+  const handleScreenshotSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScreenshotFile(file);
+    setScreenshotPreview(URL.createObjectURL(file));
+  };
+
+  // 스크린샷 AI 분석
+  const handleScreenshotAnalyze = async () => {
+    if (!screenshotFile) return;
+    setAnalyzing(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      formData.append('screenshot', screenshotFile);
+      const res = await fetch('/api/stocks/screenshot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          stockSymbol: stock.symbol,
-          stockName: stock.name,
-          market: stock.market,
-          weight: stock.weight,
-        }),
+        body: formData,
       });
-      if (!res.ok) throw new Error('종목 추가 실패');
-      return res.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
-  });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || '분석에 실패했습니다.');
+        setAnalyzing(false);
+        return;
+      }
+      setStocks((prev) => [...prev, ...(data.stocks || [])]);
+      setScreenshotFile(null);
+      setScreenshotPreview('');
+    } catch {
+      setError('서버 오류가 발생했습니다.');
+    }
+    setAnalyzing(false);
+  };
+
+  // 직접 입력
+  const handleManualAdd = () => {
+    if (!manualName) {
+      setError('종목명을 입력해주세요.');
+      return;
+    }
+    setStocks((prev) => [
+      ...prev,
+      {
+        name: manualName,
+        symbol: manualSymbol || '-',
+        quantity: Number(manualQuantity) || 0,
+        avgPrice: Number(manualPrice) || 0,
+        market: manualMarket,
+      },
+    ]);
+    setManualName('');
+    setManualSymbol('');
+    setManualQuantity('');
+    setManualPrice('');
+    setError('');
+  };
 
   // 종목 삭제
-  const deleteMutation = useMutation({
-    mutationFn: async (itemId: string) => {
-      if (!portfolio?.id) return;
-      const res = await fetch(`/api/portfolio/${portfolio.id}/items`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ itemId }),
-      });
-      if (!res.ok) throw new Error('종목 삭제 실패');
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
-  });
+  const handleRemove = (index: number) => {
+    setStocks((prev) => prev.filter((_, i) => i !== index));
+  };
 
-  // 종목 검색
-  const { data: searchResults } = useQuery({
-    queryKey: ['stockSearch', searchQuery],
-    queryFn: async () => {
-      if (!searchQuery || searchQuery.length < 1) return { results: [] };
-      const res = await fetch(`/api/stocks/search?q=${encodeURIComponent(searchQuery)}`);
-      if (!res.ok) return { results: [] };
-      return res.json();
-    },
-    enabled: searchQuery.length >= 1,
-  });
-
-  const chartData = items.map((item) => ({ name: item.stockName, value: item.weight }));
-  const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
-
-  function handleAdd() {
-    if (!newStock.name) return;
-    addMutation.mutate(newStock);
-    setNewStock({ symbol: '', name: '', market: 'KR', weight: 10 });
-    setSearchQuery('');
-    setDialogOpen(false);
-  }
-
-  function selectSearchResult(result: { symbol: string; name: string; market: 'KR' | 'US' }) {
-    setNewStock((prev) => ({ ...prev, symbol: result.symbol, name: result.name, market: result.market }));
-    setSearchQuery(result.name);
-  }
+  const inputClass =
+    'w-full rounded-lg border border-border bg-white px-4 py-3 text-gray-900 placeholder:text-gray-400 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 dark:bg-black dark:text-white dark:placeholder:text-gray-500';
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">포트폴리오</h1>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4" />종목 추가
-          </DialogTrigger>
-          <DialogContent className="border-neutral-700 bg-neutral-900">
-            <DialogHeader>
-              <DialogTitle>종목 추가</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm text-neutral-400">종목 검색</label>
-                <div className="relative mt-1">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
-                  <Input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="삼성전자 또는 NVDA"
-                    className="border-neutral-700 bg-neutral-800 pl-9"
-                  />
-                </div>
-                {/* 검색 결과 */}
-                {searchResults?.results?.length > 0 && (
-                  <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800">
-                    {searchResults.results.slice(0, 8).map((r: { symbol: string; name: string; market: 'KR' | 'US' }) => (
-                      <button
-                        key={`${r.market}-${r.symbol}`}
-                        className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-neutral-700"
-                        onClick={() => selectSearchResult(r)}
-                      >
-                        <span>{r.name}</span>
-                        <span className="text-xs text-neutral-500">{r.symbol} · {r.market}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {newStock.name && (
-                <div className="rounded-lg bg-neutral-800 p-3 text-sm">
-                  선택: <span className="font-medium">{newStock.name}</span> ({newStock.symbol}, {newStock.market})
-                </div>
-              )}
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="text-sm text-neutral-400">시장</label>
-                  <div className="mt-1 flex gap-2">
-                    {(['KR', 'US'] as const).map((m) => (
-                      <Button
-                        key={m}
-                        variant={newStock.market === m ? 'default' : 'outline'}
-                        size="sm"
-                        className={newStock.market !== m ? 'border-neutral-700 bg-neutral-800' : ''}
-                        onClick={() => setNewStock((prev) => ({ ...prev, market: m }))}
-                      >
-                        {m === 'KR' ? '한국' : '미국'}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className="w-24">
-                  <label className="text-sm text-neutral-400">비중 (%)</label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={newStock.weight}
-                    onChange={(e) => setNewStock((prev) => ({ ...prev, weight: Number(e.target.value) }))}
-                    className="mt-1 border-neutral-700 bg-neutral-800"
-                  />
-                </div>
-              </div>
-              <Button onClick={handleAdd} className="w-full" disabled={!newStock.name || addMutation.isPending}>
-                {addMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                추가
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-6">
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">포트폴리오</h1>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          스크린샷 분석 또는 직접 입력으로 포트폴리오를 관리하세요.
+        </p>
+      </motion.div>
 
-      <div className="grid gap-6 lg:grid-cols-5">
-        <Card className="border-neutral-800 bg-neutral-900/50 lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">포트폴리오 구성</CardTitle></CardHeader>
-          <CardContent>
-            {items.length > 0 ? (
-              <ResponsiveContainer width="100%" height={260}>
-                <PieChart>
-                  <Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={100} paddingAngle={2} dataKey="value">
-                    {chartData.map((_, index) => (
-                      <Cell key={index} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333', borderRadius: '8px', color: '#fff' }}
-                    formatter={(value) => [`${value}%`, '비중']}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-60 items-center justify-center text-neutral-500">종목을 추가해주세요</div>
-            )}
-            {totalWeight !== 100 && items.length > 0 && (
-              <p className="mt-2 text-center text-xs text-yellow-400">총 비중: {totalWeight}% (100%가 아닙니다)</p>
-            )}
-          </CardContent>
-        </Card>
+      {/* ====== 1. 스크린샷 분석 ====== */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1, duration: 0.4 }}
+        className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+      >
+        <div className="flex items-center gap-3">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary">1</span>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">스크린샷으로 연동하기</h2>
+        </div>
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+          증권 앱의 보유종목 화면을 캡처해서 올려주세요. AI가 자동으로 분석합니다.
+        </p>
 
-        <div className="space-y-3 lg:col-span-3">
-          <AnimatePresence>
-            {items.map((item, idx) => (
-              <motion.div
-                key={item.id}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                transition={{ delay: idx * 0.05 }}
+        <div className="mt-4 space-y-4">
+          {screenshotPreview ? (
+            <div className="relative">
+              <img src={screenshotPreview} alt="스크린샷 미리보기" className="max-h-80 w-full rounded-lg border border-border object-contain" />
+              <button
+                onClick={() => { setScreenshotFile(null); setScreenshotPreview(''); }}
+                className="absolute right-2 top-2 rounded-full bg-black/60 px-2 py-1 text-xs text-white hover:bg-black/80"
               >
-                <Card className="border-neutral-800 bg-neutral-900/50">
-                  <CardContent className="flex items-center justify-between py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-3 w-3 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{item.stockName}</span>
-                          <Badge variant="outline" className="border-neutral-700 text-neutral-400 text-[10px]">{item.stockSymbol}</Badge>
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] ${item.market === 'KR' ? 'border-blue-800 text-blue-400' : 'border-green-800 text-green-400'}`}
-                          >
-                            {item.market}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-neutral-500">비중 {item.weight}%</p>
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-neutral-500 hover:text-red-400"
-                      onClick={() => deleteMutation.mutate(item.id)}
-                      disabled={deleteMutation.isPending}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-          {items.length === 0 && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-neutral-700 py-16 text-neutral-500">
-              <Pencil className="mb-2 h-8 w-8" />
-              <p>포트폴리오가 비어있습니다</p>
-              <p className="text-sm">종목을 추가하여 뉴스 연관 분석을 받으세요</p>
+                ✕
+              </button>
             </div>
+          ) : (
+            <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-border py-10 transition-colors hover:border-primary/50 hover:bg-gray-50 dark:hover:bg-gray-900">
+              <p className="text-3xl">📸</p>
+              <p className="mt-2 text-sm font-medium text-gray-600 dark:text-gray-300">클릭하여 스크린샷 업로드</p>
+              <p className="mt-1 text-xs text-gray-400">PNG, JPG, WEBP 지원</p>
+              <input type="file" accept="image/*" onChange={handleScreenshotSelect} className="hidden" />
+            </label>
+          )}
+
+          {screenshotFile && (
+            <button
+              onClick={handleScreenshotAnalyze}
+              disabled={analyzing}
+              className="w-full rounded-lg bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {analyzing ? 'AI 분석 중...' : 'AI로 분석하기'}
+            </button>
           )}
         </div>
-      </div>
+      </motion.div>
+
+      {/* ====== 구분선 ====== */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.2 }}
+        className="flex items-center gap-4 px-2"
+      >
+        <div className="h-px flex-1 bg-border" />
+        <span className="text-sm font-medium text-gray-400 dark:text-gray-500">스크린샷이 없다면?</span>
+        <div className="h-px flex-1 bg-border" />
+      </motion.div>
+
+      {/* ====== 2. 직접 입력 ====== */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25, duration: 0.4 }}
+        className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+      >
+        <div className="flex items-center gap-3">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary">2</span>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">직접 입력하기</h2>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <input type="text" value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="종목명 (예: 삼성전자)" className={inputClass} />
+            <input type="text" value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value)} placeholder="종목코드 (예: 005930)" className={inputClass} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <input type="number" value={manualQuantity} onChange={(e) => setManualQuantity(e.target.value)} placeholder="수량" className={inputClass} />
+            <input type="number" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} placeholder="평균 매입가" className={inputClass} />
+            <div className="flex gap-2">
+              {['KR', 'US'].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setManualMarket(m)}
+                  className={`flex-1 rounded-lg border py-3 text-sm font-medium transition-colors ${
+                    manualMarket === m
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-900'
+                  }`}
+                >
+                  {m === 'KR' ? '한국' : '미국'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={handleManualAdd}
+            className="w-full rounded-lg bg-primary py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            종목 추가
+          </button>
+        </div>
+      </motion.div>
+
+      {/* 에러 메시지 */}
+      {error && (
+        <p className="text-center text-sm text-destructive">{error}</p>
+      )}
+
+      {/* ====== 포트폴리오 목록 ====== */}
+      <AnimatePresence>
+        {stocks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+          >
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+              내 포트폴리오 ({stocks.length}종목)
+            </h2>
+
+            <div className="mt-4 space-y-2">
+              <div className="hidden grid-cols-6 gap-2 px-3 text-xs font-medium text-gray-400 sm:grid">
+                <span className="col-span-2">종목명</span>
+                <span>코드</span>
+                <span className="text-right">수량</span>
+                <span className="text-right">평균가</span>
+                <span className="text-right">시장</span>
+              </div>
+
+              {stocks.map((stock, i) => (
+                <motion.div
+                  key={`${stock.symbol}-${i}`}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  className="group grid grid-cols-2 items-center gap-2 rounded-lg border border-border px-3 py-3 sm:grid-cols-6"
+                >
+                  <span className="col-span-2 font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                  <span className="text-sm text-gray-500">{stock.symbol}</span>
+                  <span className="text-right text-sm text-gray-700 dark:text-gray-300">{stock.quantity > 0 ? `${stock.quantity}주` : '-'}</span>
+                  <span className="text-right text-sm text-gray-700 dark:text-gray-300">{stock.avgPrice > 0 ? `${stock.avgPrice.toLocaleString()}원` : '-'}</span>
+                  <div className="flex items-center justify-end gap-2">
+                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>
+                      {stock.market}
+                    </span>
+                    <button
+                      onClick={() => handleRemove(i)}
+                      className="text-gray-300 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
