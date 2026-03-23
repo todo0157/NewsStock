@@ -1,19 +1,26 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { getPortfolio, savePortfolio, type PortfolioStock } from '@/lib/store';
 
-interface Stock {
+interface PriceData {
+  currentPrice: number;
+  change: number;
+  changePercent: number;
   name: string;
-  symbol: string;
-  quantity: number;
-  avgPrice: number;
-  market: string;
+  high: number;
+  low: number;
+  volume: number;
+  previousClose: number;
 }
 
 export default function PortfolioPage() {
-  const [stocks, setStocks] = useState<Stock[]>([]);
+  const [stocks, setStocks] = useState<PortfolioStock[]>([]);
   const [error, setError] = useState('');
+  const [prices, setPrices] = useState<Record<string, PriceData>>({});
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceError, setPriceError] = useState('');
 
   // 스크린샷 상태
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
@@ -26,6 +33,51 @@ export default function PortfolioPage() {
   const [manualQuantity, setManualQuantity] = useState('');
   const [manualPrice, setManualPrice] = useState('');
   const [manualMarket, setManualMarket] = useState('KR');
+
+  // 로컬스토리지에서 포트폴리오 로드
+  useEffect(() => {
+    setStocks(getPortfolio());
+  }, []);
+
+  // 현재가 조회
+  const fetchPrices = useCallback(async (stockList: PortfolioStock[]) => {
+    const validStocks = stockList.filter((s) => s.symbol && s.symbol !== '-');
+    if (validStocks.length === 0) return;
+
+    setPriceLoading(true);
+    setPriceError('');
+    try {
+      const res = await fetch('/api/stocks/prices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stocks: validStocks.map((s) => ({ symbol: s.symbol, market: s.market })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPriceError(data.error || '시세 조회 실패');
+      } else {
+        setPrices(data.prices || {});
+      }
+    } catch {
+      setPriceError('시세 서버에 연결할 수 없습니다. API 키를 확인해주세요.');
+    }
+    setPriceLoading(false);
+  }, []);
+
+  // 종목이 있으면 현재가 자동 조회
+  useEffect(() => {
+    if (stocks.length > 0) {
+      fetchPrices(stocks);
+    }
+  }, [stocks, fetchPrices]);
+
+  // stocks 변경 시 로컬스토리지에 저장
+  const updateStocks = (newStocks: PortfolioStock[]) => {
+    setStocks(newStocks);
+    savePortfolio(newStocks);
+  };
 
   // 스크린샷 선택
   const handleScreenshotSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -53,7 +105,8 @@ export default function PortfolioPage() {
         setAnalyzing(false);
         return;
       }
-      setStocks((prev) => [...prev, ...(data.stocks || [])]);
+      const newStocks = [...stocks, ...(data.stocks || [])];
+      updateStocks(newStocks);
       setScreenshotFile(null);
       setScreenshotPreview('');
     } catch {
@@ -68,8 +121,8 @@ export default function PortfolioPage() {
       setError('종목명을 입력해주세요.');
       return;
     }
-    setStocks((prev) => [
-      ...prev,
+    const newStocks = [
+      ...stocks,
       {
         name: manualName,
         symbol: manualSymbol || '-',
@@ -77,7 +130,8 @@ export default function PortfolioPage() {
         avgPrice: Number(manualPrice) || 0,
         market: manualMarket,
       },
-    ]);
+    ];
+    updateStocks(newStocks);
     setManualName('');
     setManualSymbol('');
     setManualQuantity('');
@@ -87,11 +141,48 @@ export default function PortfolioPage() {
 
   // 종목 삭제
   const handleRemove = (index: number) => {
-    setStocks((prev) => prev.filter((_, i) => i !== index));
+    updateStocks(stocks.filter((_, i) => i !== index));
+  };
+
+  // 수익률 계산
+  const getReturn = (avgPrice: number, currentPrice: number) => {
+    if (!avgPrice || !currentPrice) return null;
+    const diff = currentPrice - avgPrice;
+    const percent = (diff / avgPrice) * 100;
+    return { diff, percent };
+  };
+
+  // 포맷팅
+  const formatPrice = (price: number, market: string) => {
+    if (market === 'US') return `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `${price.toLocaleString()}원`;
   };
 
   const inputClass =
     'w-full rounded-lg border border-border bg-white px-4 py-3 text-gray-900 placeholder:text-gray-400 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 dark:bg-black dark:text-white dark:placeholder:text-gray-500';
+
+  // 전체 포트폴리오 요약
+  const portfolioSummary = stocks.reduce(
+    (acc, stock) => {
+      const price = prices[stock.symbol];
+      if (price && stock.avgPrice > 0 && stock.quantity > 0) {
+        const invested = stock.avgPrice * stock.quantity;
+        const current = price.currentPrice * stock.quantity;
+        acc.totalInvested += invested;
+        acc.totalCurrent += current;
+        acc.hasData = true;
+      }
+      return acc;
+    },
+    { totalInvested: 0, totalCurrent: 0, hasData: false }
+  );
+
+  const totalReturn = portfolioSummary.hasData
+    ? {
+        diff: portfolioSummary.totalCurrent - portfolioSummary.totalInvested,
+        percent: ((portfolioSummary.totalCurrent - portfolioSummary.totalInvested) / portfolioSummary.totalInvested) * 100,
+      }
+    : null;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -101,6 +192,213 @@ export default function PortfolioPage() {
           스크린샷 분석 또는 직접 입력으로 포트폴리오를 관리하세요.
         </p>
       </motion.div>
+
+      {/* ====== 포트폴리오 요약 (종목이 있을 때만) ====== */}
+      <AnimatePresence>
+        {stocks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            {/* 전체 수익률 카드 */}
+            {totalReturn && (
+              <div className={`rounded-xl border p-5 ${
+                totalReturn.diff >= 0
+                  ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/30'
+                  : 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">총 평가 수익률</p>
+                    <p className={`text-2xl font-bold ${totalReturn.diff >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                      {totalReturn.diff >= 0 ? '+' : ''}{totalReturn.percent.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">투자 금액</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">{portfolioSummary.totalInvested.toLocaleString()}원</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">평가 금액</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">{portfolioSummary.totalCurrent.toLocaleString()}원</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <p className={`text-sm font-medium ${totalReturn.diff >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {totalReturn.diff >= 0 ? '+' : ''}{totalReturn.diff.toLocaleString()}원
+                  </p>
+                  <button
+                    onClick={() => fetchPrices(stocks)}
+                    disabled={priceLoading}
+                    className="ml-auto rounded-lg px-3 py-1 text-xs text-gray-500 transition-colors hover:bg-white/50 dark:hover:bg-black/30"
+                  >
+                    {priceLoading ? '새로고침 중...' : '시세 새로고침'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 시세 로딩/에러 */}
+            {priceLoading && !totalReturn && (
+              <div className="rounded-xl border border-border bg-white p-4 dark:bg-gray-950">
+                <div className="flex items-center gap-2">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                  <span className="text-sm text-gray-500">현재가 조회 중...</span>
+                </div>
+              </div>
+            )}
+            {priceError && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
+                <p className="text-sm text-amber-700 dark:text-amber-300">{priceError}</p>
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  .env.local에 KIS_APP_KEY, KIS_APP_SECRET (한국) 또는 FINNHUB_API_KEY (미국)를 설정하세요.
+                </p>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ====== 포트폴리오 종목 목록 (현재가 + 수익률) ====== */}
+      <AnimatePresence>
+        {stocks.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                내 포트폴리오 ({stocks.length}종목)
+              </h2>
+              {!priceLoading && Object.keys(prices).length === 0 && stocks.some((s) => s.symbol !== '-') && (
+                <button
+                  onClick={() => fetchPrices(stocks)}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-900"
+                >
+                  현재가 조회
+                </button>
+              )}
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {stocks.map((stock, i) => {
+                const price = prices[stock.symbol];
+                const returnData = price && stock.avgPrice > 0 ? getReturn(stock.avgPrice, price.currentPrice) : null;
+
+                return (
+                  <motion.div
+                    key={`${stock.symbol}-${i}`}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                    className="group rounded-lg border border-border p-4 transition-colors hover:border-primary/20"
+                  >
+                    {/* 상단: 종목명 + 시장 + 삭제 */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                        {stock.symbol !== '-' && (
+                          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
+                        )}
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>
+                          {stock.market === 'KR' ? '한국' : '미국'}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleRemove(i)}
+                        className="text-gray-300 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    {/* 가격 정보 */}
+                    <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      {/* 매입가 */}
+                      <div>
+                        <p className="text-xs text-gray-400">매입가</p>
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {stock.avgPrice > 0 ? formatPrice(stock.avgPrice, stock.market) : '-'}
+                        </p>
+                      </div>
+
+                      {/* 현재가 */}
+                      <div>
+                        <p className="text-xs text-gray-400">현재가</p>
+                        {priceLoading ? (
+                          <div className="mt-0.5 h-4 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+                        ) : price ? (
+                          <div>
+                            <p className="text-sm font-medium text-gray-900 dark:text-white">
+                              {formatPrice(price.currentPrice, stock.market)}
+                            </p>
+                            <p className={`text-xs ${price.change >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                              전일대비 {price.change >= 0 ? '+' : ''}{price.changePercent.toFixed(2)}%
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400">-</p>
+                        )}
+                      </div>
+
+                      {/* 보유수량 */}
+                      <div>
+                        <p className="text-xs text-gray-400">보유</p>
+                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                          {stock.quantity > 0 ? `${stock.quantity}주` : '-'}
+                        </p>
+                      </div>
+
+                      {/* 수익률 */}
+                      <div>
+                        <p className="text-xs text-gray-400">수익률</p>
+                        {returnData ? (
+                          <div>
+                            <p className={`text-sm font-bold ${returnData.percent >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                              {returnData.percent >= 0 ? '+' : ''}{returnData.percent.toFixed(2)}%
+                            </p>
+                            {stock.quantity > 0 && (
+                              <p className={`text-xs ${returnData.diff >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                {returnData.diff >= 0 ? '+' : ''}{(returnData.diff * stock.quantity).toLocaleString()}원
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-gray-400">-</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 수익률 바 */}
+                    {returnData && (
+                      <div className="mt-3">
+                        <div className="relative h-2 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                          {returnData.percent >= 0 ? (
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${Math.min(returnData.percent, 100)}%` }}
+                              transition={{ duration: 0.6, ease: 'easeOut' }}
+                              className="absolute left-0 top-0 h-full rounded-full bg-green-500"
+                            />
+                          ) : (
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${Math.min(Math.abs(returnData.percent), 100)}%` }}
+                              transition={{ duration: 0.6, ease: 'easeOut' }}
+                              className="absolute right-0 top-0 h-full rounded-full bg-red-500"
+                            />
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ====== 1. 스크린샷 분석 ====== */}
       <motion.div
@@ -210,58 +508,6 @@ export default function PortfolioPage() {
       {error && (
         <p className="text-center text-sm text-destructive">{error}</p>
       )}
-
-      {/* ====== 포트폴리오 목록 ====== */}
-      <AnimatePresence>
-        {stocks.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-            className="rounded-xl border border-border bg-white p-6 dark:bg-gray-950"
-          >
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-              내 포트폴리오 ({stocks.length}종목)
-            </h2>
-
-            <div className="mt-4 space-y-2">
-              <div className="hidden grid-cols-6 gap-2 px-3 text-xs font-medium text-gray-400 sm:grid">
-                <span className="col-span-2">종목명</span>
-                <span>코드</span>
-                <span className="text-right">수량</span>
-                <span className="text-right">평균가</span>
-                <span className="text-right">시장</span>
-              </div>
-
-              {stocks.map((stock, i) => (
-                <motion.div
-                  key={`${stock.symbol}-${i}`}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  className="group grid grid-cols-2 items-center gap-2 rounded-lg border border-border px-3 py-3 sm:grid-cols-6"
-                >
-                  <span className="col-span-2 font-medium text-gray-900 dark:text-white">{stock.name}</span>
-                  <span className="text-sm text-gray-500">{stock.symbol}</span>
-                  <span className="text-right text-sm text-gray-700 dark:text-gray-300">{stock.quantity > 0 ? `${stock.quantity}주` : '-'}</span>
-                  <span className="text-right text-sm text-gray-700 dark:text-gray-300">{stock.avgPrice > 0 ? `${stock.avgPrice.toLocaleString()}원` : '-'}</span>
-                  <div className="flex items-center justify-end gap-2">
-                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>
-                      {stock.market}
-                    </span>
-                    <button
-                      onClick={() => handleRemove(i)}
-                      className="text-gray-300 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100 dark:text-gray-600 dark:hover:text-red-400"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

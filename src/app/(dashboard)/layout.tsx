@@ -9,6 +9,7 @@ const navItems = [
   { href: '/feed', label: '뉴스 피드', icon: '📰' },
   { href: '/analyze', label: 'AI 분석', icon: '🔍' },
   { href: '/portfolio', label: '포트폴리오', icon: '💼' },
+  { href: '/chart', label: '차트', icon: '📈' },
   { href: '/reports', label: '리포트', icon: '📊' },
   { href: '/settings', label: '설정', icon: '⚙️' },
 ];

@@ -1,6 +1,6 @@
 import type { StockPrice, StockSearchResult, StockCandle } from '@/types/stock';
 
-const BASE_URL = 'https://openapivts.koreainvestment.com:29443'; // 모의투자
+const BASE_URL = 'https://openapi.koreainvestment.com:9443'; // 실전투자
 const APP_KEY = process.env.KIS_APP_KEY ?? '';
 const APP_SECRET = process.env.KIS_APP_SECRET ?? '';
 
@@ -154,6 +154,75 @@ const POPULAR_KR_STOCKS: StockSearchResult[] = [
   { symbol: '017670', name: 'SK텔레콤', market: 'KR' },
   { symbol: '086790', name: '하나금융지주', market: 'KR' },
 ];
+
+// --- 지수 현재가 조회 (KOSPI / KOSDAQ) ---
+
+export interface IndexPrice {
+  name: string;
+  value: number;
+  change: number;
+  changePercent: number;
+  high: number;
+  low: number;
+  volume: number;
+}
+
+const INDEX_CODES: Record<string, string> = {
+  KOSPI: '0001',
+  KOSDAQ: '2001',
+};
+
+export async function getIndexPrice(type: 'KOSPI' | 'KOSDAQ'): Promise<IndexPrice> {
+  const code = INDEX_CODES[type];
+  const data = await kisRequest(
+    '/uapi/domestic-stock/v1/quotations/inquire-index-price',
+    'FHPUP02100000',
+    { FID_COND_MRKT_DIV_CODE: 'U', FID_INPUT_ISCD: code }
+  );
+
+  const o = data.output;
+  return {
+    name: type,
+    value: Number(o.bstp_nmix_prpr),
+    change: Number(o.bstp_nmix_prdy_vrss),
+    changePercent: Number(o.bstp_nmix_prdy_ctrt),
+    high: Number(o.bstp_nmix_hgpr),
+    low: Number(o.bstp_nmix_lwpr),
+    volume: Number(o.acml_vol),
+  };
+}
+
+// --- 지수 일별 시세 조회 ---
+
+export async function getIndexHistory(
+  type: 'KOSPI' | 'KOSDAQ',
+  startDate: string,
+  endDate: string
+): Promise<StockCandle[]> {
+  const code = INDEX_CODES[type];
+  const data = await kisRequest(
+    '/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice',
+    'FHKUP03500100',
+    {
+      FID_COND_MRKT_DIV_CODE: 'U',
+      FID_INPUT_ISCD: code,
+      FID_INPUT_DATE_1: startDate,
+      FID_INPUT_DATE_2: endDate,
+      FID_PERIOD_DIV_CODE: 'D',
+    }
+  );
+
+  return (data.output2 || []).map(
+    (item: Record<string, string>): StockCandle => ({
+      date: item.stck_bsop_date,
+      open: Number(item.bstp_nmix_oprc),
+      high: Number(item.bstp_nmix_hgpr),
+      low: Number(item.bstp_nmix_lwpr),
+      close: Number(item.bstp_nmix_prpr),
+      volume: Number(item.acml_vol),
+    })
+  );
+}
 
 export function searchKrStocks(query: string): StockSearchResult[] {
   const q = query.toLowerCase();

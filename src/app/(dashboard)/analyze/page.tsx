@@ -1,18 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-
-interface StockResult {
-  name: string;
-  symbol: string;
-  market: string;
-  impact: 'positive' | 'negative';
-  probability: number;
-  reason: string;
-  action: string;
-  timing: string;
-}
+import {
+  getPortfolio,
+  saveReport,
+  matchPortfolioStocks,
+  type PortfolioStock,
+  type StockResult,
+  type AffectedPortfolioStock,
+} from '@/lib/store';
 
 interface AnalysisResult {
   keyInsight: string;
@@ -52,12 +49,25 @@ export default function AnalyzePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [step, setStep] = useState(0);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [portfolio, setPortfolio] = useState<PortfolioStock[]>([]);
+  const [affectedStocks, setAffectedStocks] = useState<AffectedPortfolioStock[]>([]);
 
-  const steps = ['기사 파싱 중...', 'AI 분석 중...', '종목 매칭 중...', '리포트 생성 중...'];
+  const steps = ['기사 파싱 중...', 'AI 분석 중...', '포트폴리오 매칭 중...', '리포트 생성 중...'];
+
+  // 포트폴리오 로드
+  useEffect(() => {
+    setPortfolio(getPortfolio());
+    const handler = () => setPortfolio(getPortfolio());
+    window.addEventListener('portfolio-updated', handler);
+    return () => window.removeEventListener('portfolio-updated', handler);
+  }, []);
 
   const handleAnalyze = async () => {
     if (!url.trim()) return;
     setResult(null);
+    setSaved(false);
+    setAffectedStocks([]);
     setAnalyzing(true);
 
     for (let i = 0; i < steps.length; i++) {
@@ -67,6 +77,30 @@ export default function AnalyzePage() {
 
     setAnalyzing(false);
     setResult(mockResult);
+
+    // 포트폴리오 매칭
+    const currentPortfolio = getPortfolio();
+    const affected = matchPortfolioStocks(currentPortfolio, mockResult.benefitStocks, mockResult.harmStocks);
+    setAffectedStocks(affected);
+
+    // 자동 저장
+    const title = url.includes('http') ? `뉴스 분석: ${url.split('/').pop()?.slice(0, 30) || url.slice(0, 40)}` : url.slice(0, 50);
+    saveReport({
+      id: Date.now().toString(),
+      url,
+      title,
+      keyInsight: mockResult.keyInsight,
+      sentiment: mockResult.sentiment,
+      confidence: mockResult.confidence,
+      hiddenIntent: mockResult.hiddenIntent,
+      hiddenIntentDetail: mockResult.hiddenIntentDetail,
+      impact: mockResult.impact,
+      benefitStocks: mockResult.benefitStocks,
+      harmStocks: mockResult.harmStocks,
+      date: new Date().toISOString(),
+      affectedPortfolioStocks: affected,
+    });
+    setSaved(true);
   };
 
   return (
@@ -77,6 +111,21 @@ export default function AnalyzePage() {
           뉴스 URL을 입력하면 AI가 수혜/손해 종목을 분석합니다.
         </p>
       </motion.div>
+
+      {/* 포트폴리오 연동 상태 */}
+      {portfolio.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.05 }}
+          className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5"
+        >
+          <span className="text-sm text-primary">💼</span>
+          <span className="text-sm text-gray-700 dark:text-gray-300">
+            포트폴리오 연동 중 — <strong className="text-primary">{portfolio.length}종목</strong> 기반 맞춤 분석이 적용됩니다.
+          </span>
+        </motion.div>
+      )}
 
       {/* URL 입력 */}
       <motion.div
@@ -138,6 +187,62 @@ export default function AnalyzePage() {
             transition={{ duration: 0.5 }}
             className="space-y-4"
           >
+            {/* 저장 완료 알림 */}
+            {saved && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="flex items-center gap-2 rounded-lg bg-green-50 px-4 py-2.5 dark:bg-green-950/30"
+              >
+                <span className="text-green-600 dark:text-green-400">✓</span>
+                <span className="text-sm text-green-700 dark:text-green-300">리포트가 자동 저장되었습니다. 리포트 탭에서 확인할 수 있습니다.</span>
+              </motion.div>
+            )}
+
+            {/* 내 포트폴리오 영향 알림 */}
+            {affectedStocks.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.1 }}
+                className="rounded-xl border-2 border-amber-300 bg-amber-50 p-5 dark:border-amber-600 dark:bg-amber-950/30"
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">⚠️</span>
+                  <p className="text-sm font-bold text-amber-800 dark:text-amber-200">
+                    내 포트폴리오 영향 감지 — {affectedStocks.length}종목
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {affectedStocks.map((stock) => (
+                    <div key={stock.symbol} className="flex items-center justify-between rounded-lg bg-white/80 px-4 py-3 dark:bg-black/30">
+                      <div className="flex items-center gap-3">
+                        <span className={`flex h-8 w-8 items-center justify-center rounded-full text-sm ${
+                          stock.impact === 'positive'
+                            ? 'bg-green-100 text-green-600 dark:bg-green-950 dark:text-green-400'
+                            : 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
+                        }`}>
+                          {stock.impact === 'positive' ? '↑' : '↓'}
+                        </span>
+                        <div>
+                          <p className="font-medium text-gray-900 dark:text-white">{stock.name}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{stock.reason}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          stock.impact === 'positive'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'
+                            : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                        }`}>{stock.action}</span>
+                        <p className="mt-1 text-xs text-gray-400">{stock.probability}%</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
             {/* 핵심 인사이트 */}
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-5">
               <div className="flex items-start justify-between gap-3">
@@ -188,26 +293,34 @@ export default function AnalyzePage() {
             <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
               <p className="mb-3 text-sm font-semibold text-green-600 dark:text-green-400">📈 수혜 종목</p>
               <div className="space-y-3">
-                {result.benefitStocks.map((stock) => (
-                  <div key={stock.symbol} className="rounded-lg bg-gray-50 p-4 dark:bg-gray-900">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
-                        <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
-                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
+                {result.benefitStocks.map((stock) => {
+                  const isInPortfolio = portfolio.some(
+                    (p) => p.name.toLowerCase() === stock.name.toLowerCase() || p.symbol.toLowerCase() === stock.symbol.toLowerCase()
+                  );
+                  return (
+                    <div key={stock.symbol} className={`rounded-lg p-4 ${isInPortfolio ? 'bg-primary/5 ring-1 ring-primary/30' : 'bg-gray-50 dark:bg-gray-900'}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {isInPortfolio && (
+                            <span className="rounded bg-primary/20 px-1.5 py-0.5 text-xs font-bold text-primary">내 종목</span>
+                          )}
+                          <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
+                        </div>
+                        <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-700 dark:bg-green-950 dark:text-green-300">{stock.action}</span>
                       </div>
-                      <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-700 dark:bg-green-950 dark:text-green-300">{stock.action}</span>
-                    </div>
-                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
-                        <div className="h-full rounded-full bg-green-500" style={{ width: `${stock.probability}%` }} />
+                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
+                          <div className="h-full rounded-full bg-green-500" style={{ width: `${stock.probability}%` }} />
+                        </div>
+                        <span className="text-xs text-gray-500">{stock.probability}%</span>
                       </div>
-                      <span className="text-xs text-gray-500">{stock.probability}%</span>
+                      <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
                     </div>
-                    <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -215,30 +328,38 @@ export default function AnalyzePage() {
             <div className="rounded-xl border border-border bg-white p-5 dark:bg-gray-950">
               <p className="mb-3 text-sm font-semibold text-red-600 dark:text-red-400">📉 손해 종목</p>
               <div className="space-y-3">
-                {result.harmStocks.map((stock) => (
-                  <div key={stock.symbol} className="rounded-lg bg-gray-50 p-4 dark:bg-gray-900">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
-                        <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
-                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
+                {result.harmStocks.map((stock) => {
+                  const isInPortfolio = portfolio.some(
+                    (p) => p.name.toLowerCase() === stock.name.toLowerCase() || p.symbol.toLowerCase() === stock.symbol.toLowerCase()
+                  );
+                  return (
+                    <div key={stock.symbol} className={`rounded-lg p-4 ${isInPortfolio ? 'bg-red-50 ring-1 ring-red-300 dark:bg-red-950/30 dark:ring-red-600' : 'bg-gray-50 dark:bg-gray-900'}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {isInPortfolio && (
+                            <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-bold text-red-600 dark:bg-red-950 dark:text-red-400">내 종목</span>
+                          )}
+                          <span className="font-medium text-gray-900 dark:text-white">{stock.name}</span>
+                          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-400">{stock.symbol}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${stock.market === 'KR' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300'}`}>{stock.market}</span>
+                        </div>
+                        <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">{stock.action}</span>
                       </div>
-                      <span className="rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">{stock.action}</span>
-                    </div>
-                    <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
-                        <div className="h-full rounded-full bg-red-500" style={{ width: `${stock.probability}%` }} />
+                      <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">{stock.reason}</p>
+                      <div className="mt-2 flex items-center gap-2">
+                        <div className="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-800">
+                          <div className="h-full rounded-full bg-red-500" style={{ width: `${stock.probability}%` }} />
+                        </div>
+                        <span className="text-xs text-gray-500">{stock.probability}%</span>
                       </div>
-                      <span className="text-xs text-gray-500">{stock.probability}%</span>
+                      <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
                     </div>
-                    <p className="mt-1 text-xs text-gray-400">타이밍: {stock.timing}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
-            {/* PDF 내보내기 + 면책 */}
+            {/* 면책 */}
             <div className="flex items-center justify-between rounded-xl border border-border bg-white px-5 py-4 dark:bg-gray-950">
               <p className="text-xs text-gray-400">본 분석은 AI 기반 참고 자료이며, 투자 결정의 최종 책임은 본인에게 있습니다.</p>
               <button className="shrink-0 rounded-lg border border-border px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-900">
